@@ -1,13 +1,10 @@
 /**
  * SMCI Database to Google Contacts Sync System
- * Version: 21.1 (Fix: UI Error & Adjusted Full Sync Interval)
+ * Version: 21.2 (Fix: QuickSync targets strictly last 5 rows based on Col A)
  */
 
 // ==========================================
 // 【設定】対象のスプレッドシートIDリスト
-// 複数のDBがある場合は、ここにIDをカンマ区切りで並べてください。
-// 空の場合は、現在開いているスプレッドシートのみを対象とします（手動実行時）。
-// トリガー実行時はID指定が推奨されます。
 const TARGET_SPREADSHEET_IDS = [
   "1GQQy2hAvZ8afRxySWcpayQLaOIN7MkrYmFcKrauKOiw", //SMCI-PKJ管理表
   "1610hT2vzaY-7d9IXktwv-eTWeVyBh5p_cxiHHYwI8g8", //SMCI-PNY管理表
@@ -18,10 +15,10 @@ const TARGET_SPREADSHEET_IDS = [
 // ==========================================
 
 const START_ROW = 4;
-const SCRIPT_VERSION = "v21.1";
+const SCRIPT_VERSION = "v21.2";
 const BASE_DELIMITER = "SM://SMCI_AutoUpdater";
 const SYSTEM_LABEL = "SMCI Auto Updater"; 
-const TIME_LIMIT_MS = 270 * 1000; // 4分30秒 (実行制限回避用)
+const TIME_LIMIT_MS = 270 * 1000; 
 
 // グローバルキャッシュ
 let groupMap = new Map();
@@ -34,7 +31,6 @@ let mapName = new Map();
 let executionStartTime = 0;
 
 function onOpen() {
-  // UIが表示できるコンテキスト（スプレッドシートから開いた場合）のみメニューを作成
   try {
     const ui = SpreadsheetApp.getUi();
     ui.createMenu('SMCI連携')
@@ -50,25 +46,17 @@ function onOpen() {
   }
 }
 
-/**
- * ■ トリガー設定関数 (修正版)
- * UIアラートを削除し、ログ出力のみに変更しました。
- * フル更新の頻度を30分→1時間に変更し、API制限リスクを低減しました。
- */
 function setupAutomatedTriggers() {
   const triggers = ScriptApp.getProjectTriggers();
-  
-  // 既存トリガーの削除 (重複防止)
   triggers.forEach(t => ScriptApp.deleteTrigger(t));
   
-  // 1. クイック更新 (5分ごと) - 新規追加への対応
+  // 1. クイック更新 (5分ごと)
   ScriptApp.newTrigger('runQuickSync')
     .timeBased()
     .everyMinutes(5)
     .create();
 
-  // 2. フル更新 (1時間ごと) - 全体整合性
-  // ※API消費を抑えるため 30分 -> 1時間 に変更しました
+  // 2. フル更新 (1時間ごと)
   ScriptApp.newTrigger('mainSyncProcess')
     .timeBased()
     .everyHours(1) 
@@ -79,10 +67,12 @@ function setupAutomatedTriggers() {
 }
 
 /**
- * ■ クイック更新 (5分に1回実行)
+ * ■ クイック更新 (5分に1回実行) - v21.2 改修版
+ * 全ファイルの「A列(SMCI-XX48)が空欄でない最後の行」を特定し、
+ * その行を含む直近5行のみを更新します。
  */
 function runQuickSync() {
-  console.log("🚀 Quick Sync Started...");
+  console.log("🚀 Quick Sync Started (Targeting strict bottom rows)...");
   
   let fileIds = TARGET_SPREADSHEET_IDS;
   if (!fileIds || fileIds.length === 0) {
@@ -100,21 +90,42 @@ function runQuickSync() {
     try {
       const ss = SpreadsheetApp.openById(fileId);
       const sheet = ss.getSheets()[0];
-      const lastRow = sheet.getLastRow();
+      const maxRow = sheet.getLastRow();
       
-      console.log(`[QuickSync] Checking File ${idx+1}: ${ss.getName()}`);
-
-      // A. 上部5件
-      const topEnd = Math.min(START_ROW + 5, lastRow);
-      for (let r = START_ROW; r < topEnd; r++) {
-        processSingleRow(sheet, r);
+      if (maxRow < START_ROW) {
+        console.log(`[QuickSync] File ${idx+1}: Empty or header only. Skipped.`);
+        return;
       }
 
-      // B. 下部5件 (上部と被らない範囲で)
-      let bottomStart = Math.max(START_ROW, lastRow - 5);
-      if (bottomStart < topEnd) bottomStart = topEnd; 
+      // 1. A列(1列目)の値を一括取得して、真の最終行を探す
+      // getRange(row, col, numRows, numCols)
+      const colAValues = sheet.getRange(START_ROW, 1, maxRow - START_ROW + 1, 1).getValues();
+      
+      let trueLastRow = -1;
 
-      for (let r = bottomStart; r <= lastRow; r++) {
+      // 下から上にループして、値がある最初の行を探す
+      for (let i = colAValues.length - 1; i >= 0; i--) {
+        const val = String(colAValues[i][0]).trim();
+        if (val && val !== "#N/A") { 
+          // 配列インデックス i に START_ROW を足すと実在する行番号になる
+          trueLastRow = START_ROW + i;
+          break;
+        }
+      }
+
+      // データが見つからなかった場合
+      if (trueLastRow === -1) {
+        console.log(`[QuickSync] File ${idx+1}: No valid data in Col A. Skipped.`);
+        return;
+      }
+
+      // 2. 処理範囲を決定 (真の最終行から4行戻る)
+      const processStart = Math.max(START_ROW, trueLastRow - 4);
+      
+      console.log(`[QuickSync] File ${idx+1}: ${ss.getName()} - Processing rows ${processStart} to ${trueLastRow} (Based on Col A)`);
+
+      // 3. 該当範囲を実行
+      for (let r = processStart; r <= trueLastRow; r++) {
         processSingleRow(sheet, r);
       }
       
@@ -125,9 +136,6 @@ function runQuickSync() {
   console.log("✅ Quick Sync Completed.");
 }
 
-/**
- * ■ フル更新 (1時間に1回実行 / メインプロセス)
- */
 function mainSyncProcess() {
   executionStartTime = new Date().getTime();
   const props = PropertiesService.getScriptProperties();
@@ -142,7 +150,6 @@ function mainSyncProcess() {
     }
   }
 
-  // Resume check
   let currentFileIndex = parseInt(props.getProperty('SYNC_FILE_INDEX') || '0');
   let currentRowIndex = parseInt(props.getProperty('SYNC_ROW_INDEX') || START_ROW.toString());
   
