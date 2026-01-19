@@ -1,6 +1,7 @@
 /**
  * File: Logic_Process.gs
  * Row processing and Payload construction
+ * v24.1 Fix: Changed 'label' property to 'formattedType' for Custom Labels
  */
 
 function processSingleRow(sheet, rowNumber) {
@@ -72,7 +73,7 @@ function processSingleRow(sheet, rowNumber) {
 function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   let updates = []; 
 
-  // 1. Name & Furigana (Convert Kata -> Hira)
+  // 1. Name & Furigana
   let fName = cleanData(d['SMCI-XX05']); 
   let gName = cleanData(d['SMCI-XX07']); 
   let mName = cleanData(d['SMCI-XX06']); 
@@ -92,15 +93,14 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     updates.push("Name(Japanese)");
   }
 
-  // 【修正】フリガナをひらがなに変換
   const nameObj = {
     familyName: fName, 
     givenName: gName, 
     middleName: mName,
     honorificPrefix: cleanData(d['SMCI-XX04']), 
     honorificSuffix: cleanData(d['SMCI-XX14']),
-    phoneticFamilyName: kataToHira(cleanData(d['SMCI-XX08'])), // カタカナ→ひらがな
-    phoneticGivenName: kataToHira(cleanData(d['SMCI-XX10']))   // カタカナ→ひらがな
+    phoneticFamilyName: kataToHira(cleanData(d['SMCI-XX08'])), 
+    phoneticGivenName: kataToHira(cleanData(d['SMCI-XX10']))   
   };
 
   const nick = cleanData(d['SMCI-XX15']);
@@ -117,12 +117,11 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     birthdays: [], events: [], urls: [], userDefined: [], biographies: []
   };
 
-  // 2. Organization (School Removed -> Moved to CF)
+  // 2. Organization
   const company = cleanData(d['SMCI-XX19']);
   if (company) {
     payload.organizations.push({ name: company, title: cleanData(d['SMCI-XX21']), department: cleanData(d['SMCI-XX20']), type: 'work' });
   }
-  // ※学校名(XX84)はここでは追加せず、後述のCFで追加
 
   // 3. Labels
   if (newLabelIds && newLabelIds.length > 0) {
@@ -147,14 +146,18 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeEmail(d['SMCI-XX23'], 'work');
   mergeEmail(d['SMCI-XX85'], 'school');
 
-  // 5. Phone Merge (with Custom Label support)
+  // 5. Phone Merge (Fix: Use 'formattedType' instead of 'label')
   const mergePhone = (val, type, label) => {
     const v = cleanData(val);
     if (v) {
       // 既存の同タイプ・同ラベルを除去
-      payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.label === label));
+      payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.formattedType === label));
+      
       let phoneObj = { value: String(v), type: type };
-      if (label) phoneObj.label = label;
+      
+      // 【重要修正】label ではなく formattedType を使う
+      if (label) phoneObj.formattedType = label; 
+      
       payload.phoneNumbers.push(phoneObj);
     }
   };
@@ -163,16 +166,19 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergePhone(d['SMCI-XX26'], 'work');
   mergePhone(d['SMCI-XX27'], 'homeFax'); 
   mergePhone(d['SMCI-XX28'], 'workFax');
-  // 【修正】学校FAXをラベル付きで登録 (type: other, label: FAX（学校）)
   mergePhone(d['SMCI-XX86'], 'other', 'FAX（学校）');
 
-  // 6. Address Merge
+  // 6. Address Merge (Fix: Use 'formattedType' instead of 'label')
   const mergeAddress = (val, type, label) => {
     const v = cleanData(val);
     if (v && !isDateString(v)) {
-      payload.addresses = payload.addresses.filter(a => !(a.type === type && a.label === label));
+      payload.addresses = payload.addresses.filter(a => !(a.type === type && a.formattedType === label));
+      
       let addrObj = { formattedValue: String(v), type: type };
-      if (label) addrObj.label = label;
+      
+      // 【重要修正】label ではなく formattedType を使う
+      if (label) addrObj.formattedType = label;
+      
       payload.addresses.push(addrObj);
     }
   };
@@ -239,7 +245,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("別名", d['SMCI-XX79']); 
   setCF("出身地", d['SMCI-XX81']); 
   setCF("出生地", d['SMCI-XX82']); 
-  setCF("学校名", d['SMCI-XX84']); // 【修正】学校名をカスタムフィールドへ
+  setCF("学校名", d['SMCI-XX84']); 
   
   const engName = `${cleanData(d['SMCI-XX11'])} ${cleanData(d['SMCI-XX12'])} ${cleanData(d['SMCI-XX13'])}`.trim();
   setCF("英語名", engName);
@@ -255,7 +261,6 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     userNotes = existing.biographies[0].value.split(BASE_DELIMITER)[0];
     userNotes = userNotes.replace(/----\s*$/, "").trim(); 
   }
-  // 【修正】新タイムスタンプ形式 (getTimestampString)
   let footer = `\n\n----\n${BASE_DELIMITER}\n${getTimestampString()}\n\n`;
   footer += `SMCI11: ${valSMCI11}\n`;
   footer += `SMCI9: ${valSMCI9}\n`;
