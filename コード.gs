@@ -1,6 +1,6 @@
 /**
  * SMCI Database to Google Contacts Sync System
- * Version: 21.2 (Fix: QuickSync targets strictly last 5 rows based on Col A)
+ * Version: 22.0 (Update: ID1.1 Support - School split, SMCI3, Food restrictions, etc.)
  */
 
 // ==========================================
@@ -15,7 +15,7 @@ const TARGET_SPREADSHEET_IDS = [
 // ==========================================
 
 const START_ROW = 4;
-const SCRIPT_VERSION = "v21.2";
+const SCRIPT_VERSION = "v22.0";
 const BASE_DELIMITER = "SM://SMCI_AutoUpdater";
 const SYSTEM_LABEL = "SMCI Auto Updater"; 
 const TIME_LIMIT_MS = 270 * 1000; 
@@ -34,7 +34,7 @@ function onOpen() {
   try {
     const ui = SpreadsheetApp.getUi();
     ui.createMenu('SMCI連携')
-      .addItem('【設定】自動更新トリガーをセット (初回のみ実行)', 'setupAutomatedTriggers')
+      .addItem('【設定】自動更新トリガーをセット (初回のみ)', 'setupAutomatedTriggers')
       .addSeparator()
       .addItem('【手動】クイック更新 (最新/末尾のみ)', 'runQuickSync')
       .addItem('【手動】フル更新 (中断・再開対応)', 'mainSyncProcess')
@@ -63,25 +63,17 @@ function setupAutomatedTriggers() {
     .create();
     
   console.log("✅ Triggers set successfully: QuickSync(5min), FullSync(1hour).");
-  console.log("このログが表示されていれば設定完了です。");
 }
 
 /**
- * ■ クイック更新 (5分に1回実行) - v21.2 改修版
- * 全ファイルの「A列(SMCI-XX48)が空欄でない最後の行」を特定し、
- * その行を含む直近5行のみを更新します。
+ * ■ クイック更新
  */
 function runQuickSync() {
-  console.log("🚀 Quick Sync Started (Targeting strict bottom rows)...");
-  
+  console.log("🚀 Quick Sync Started...");
   let fileIds = TARGET_SPREADSHEET_IDS;
   if (!fileIds || fileIds.length === 0) {
-    try {
-      fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()];
-    } catch (e) {
-      console.warn("No Target IDs and no Active Sheet. Quick sync skipped.");
-      return;
-    }
+    try { fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()]; } 
+    catch (e) { console.warn("No Target IDs. Skipped."); return; }
   }
 
   initAllMaps();
@@ -92,43 +84,27 @@ function runQuickSync() {
       const sheet = ss.getSheets()[0];
       const maxRow = sheet.getLastRow();
       
-      if (maxRow < START_ROW) {
-        console.log(`[QuickSync] File ${idx+1}: Empty or header only. Skipped.`);
-        return;
-      }
+      if (maxRow < START_ROW) return;
 
-      // 1. A列(1列目)の値を一括取得して、真の最終行を探す
-      // getRange(row, col, numRows, numCols)
+      // A列基準で最終行を特定
       const colAValues = sheet.getRange(START_ROW, 1, maxRow - START_ROW + 1, 1).getValues();
-      
       let trueLastRow = -1;
-
-      // 下から上にループして、値がある最初の行を探す
       for (let i = colAValues.length - 1; i >= 0; i--) {
         const val = String(colAValues[i][0]).trim();
         if (val && val !== "#N/A") { 
-          // 配列インデックス i に START_ROW を足すと実在する行番号になる
           trueLastRow = START_ROW + i;
           break;
         }
       }
 
-      // データが見つからなかった場合
-      if (trueLastRow === -1) {
-        console.log(`[QuickSync] File ${idx+1}: No valid data in Col A. Skipped.`);
-        return;
-      }
+      if (trueLastRow === -1) return;
 
-      // 2. 処理範囲を決定 (真の最終行から4行戻る)
       const processStart = Math.max(START_ROW, trueLastRow - 4);
-      
-      console.log(`[QuickSync] File ${idx+1}: ${ss.getName()} - Processing rows ${processStart} to ${trueLastRow} (Based on Col A)`);
+      console.log(`[QuickSync] File ${idx+1}: Processing rows ${processStart} to ${trueLastRow}`);
 
-      // 3. 該当範囲を実行
       for (let r = processStart; r <= trueLastRow; r++) {
         processSingleRow(sheet, r);
       }
-      
     } catch (e) {
       console.error(`QuickSync Failed for ID ${fileId}: ${e.message}`);
     }
@@ -136,18 +112,17 @@ function runQuickSync() {
   console.log("✅ Quick Sync Completed.");
 }
 
+/**
+ * ■ フル更新
+ */
 function mainSyncProcess() {
   executionStartTime = new Date().getTime();
   const props = PropertiesService.getScriptProperties();
   
   let fileIds = TARGET_SPREADSHEET_IDS;
   if (!fileIds || fileIds.length === 0) {
-    try {
-      fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()];
-    } catch (e) {
-      console.error("No Target Spreadsheet IDs set. Cannot run Full Sync via trigger.");
-      return;
-    }
+    try { fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()]; }
+    catch (e) { console.error("No Target Spreadsheet IDs."); return; }
   }
 
   let currentFileIndex = parseInt(props.getProperty('SYNC_FILE_INDEX') || '0');
@@ -157,8 +132,7 @@ function mainSyncProcess() {
     currentFileIndex = 0; currentRowIndex = START_ROW;
   }
 
-  console.log(`🔄 Full Sync Started/Resumed... FileIndex: ${currentFileIndex}, Row: ${currentRowIndex}`);
-
+  console.log(`🔄 Full Sync Resumed... FileIndex: ${currentFileIndex}, Row: ${currentRowIndex}`);
   initAllMaps();
 
   for (let i = currentFileIndex; i < fileIds.length; i++) {
@@ -179,7 +153,7 @@ function mainSyncProcess() {
       if (isTimeUp()) {
         props.setProperty('SYNC_FILE_INDEX', i.toString());
         props.setProperty('SYNC_ROW_INDEX', r.toString());
-        console.warn(`⏳ Time Limit. Paused at File[${i}], Row[${r}]. Will resume in next cycle.`);
+        console.warn(`⏳ Time Limit. Paused at File[${i}], Row[${r}].`);
         return; 
       }
       processSingleRow(sheet, r);
@@ -187,7 +161,7 @@ function mainSyncProcess() {
   }
 
   resetSyncStatus();
-  console.log("✅ Full Sync Completed for all files.");
+  console.log("✅ Full Sync Completed.");
 }
 
 function resetSyncStatus() {
@@ -200,15 +174,12 @@ function isTimeUp() {
   return (new Date().getTime() - executionStartTime) > TIME_LIMIT_MS;
 }
 
-function testSyncFirstFive() { runQuickSync(); }
-
 
 // --- Initialization ---
 function initAllMaps() {
-  console.log("Initializing: Fetching ALL contacts from Google to build index...");
+  console.log("Initializing Index...");
   initGroupMap(); 
   let pageToken = null;
-  let count = 0;
   try {
     do {
       const res = People.People.Connections.list('people/me', {
@@ -216,9 +187,8 @@ function initAllMaps() {
         pageSize: 1000,
         pageToken: pageToken
       });
-      const connections = res.connections;
-      if (connections) {
-        connections.forEach(person => {
+      if (res.connections) {
+        res.connections.forEach(person => {
           if (person.userDefined) {
             person.userDefined.forEach(ud => {
               if (ud.key === 'SMCI11' && ud.value) mapSMCI11.set(ud.value, person);
@@ -240,18 +210,16 @@ function initAllMaps() {
              if (disp) mapName.set(disp, person);
           }
         });
-        count += connections.length;
       }
       pageToken = res.nextPageToken;
     } while (pageToken);
-    console.log(`Index Built: Loaded ${count} contacts.`);
   } catch (e) {
     console.error("Critical Error during initialization: " + e.message);
     throw e;
   }
 }
 
-// --- Group (Label) Helpers ---
+// --- Helper Functions ---
 function initGroupMap() {
   try {
     let pageToken = null;
@@ -279,7 +247,6 @@ function getOrCreateGroupResourceName(labelName) {
   } catch (e) { return null; }
 }
 
-// --- Helper Functions ---
 function cleanData(val) {
   if (val === null || val === undefined) return "";
   if (val instanceof Date) return val;
@@ -339,7 +306,6 @@ function processSingleRow(sheet, rowNumber) {
     let existingPerson = null;
     let foundBy = "";
 
-    // Identification
     if (valSMCI11 && mapSMCI11.has(valSMCI11)) { existingPerson = mapSMCI11.get(valSMCI11); foundBy = "SMCI11(Map)"; }
     if (!existingPerson && valSMCI9 && mapSMCI9.has(valSMCI9)) { existingPerson = mapSMCI9.get(valSMCI9); foundBy = "SMCI9(Map)"; }
     if (!existingPerson && valTMDb && mapTMDb.has(valTMDb)) { existingPerson = mapTMDb.get(valTMDb); foundBy = "TMDb(Map)"; }
@@ -353,7 +319,6 @@ function processSingleRow(sheet, rowNumber) {
       }
     }
 
-    // Label
     let labelIds = [];
     const labelName = cleanData(d['SMCI-XX61']);
     if (labelName) labelName.split(';').forEach(ln => { const id = getOrCreateGroupResourceName(ln); if (id) labelIds.push(id); });
@@ -394,10 +359,11 @@ function updateContactPhoto(resourceName, url) {
   } catch (e) { console.warn('Photo fail: ' + e.message); }
 }
 
-// --- Payload Builder ---
+// --- Payload Builder (v22.0: ID1.1 Support) ---
 function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   let updates = []; 
 
+  // 1. Name
   let fName = cleanData(d['SMCI-XX05']); 
   let gName = cleanData(d['SMCI-XX07']); 
   let mName = cleanData(d['SMCI-XX06']); 
@@ -432,7 +398,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   const payload = {
     names: [nameObj],
     nicknames: nick ? [{ value: nick }] : [],
-    organizations: [{ name: cleanData(d['SMCI-XX19']), title: cleanData(d['SMCI-XX21']), department: cleanData(d['SMCI-XX20']) }],
+    organizations: [],
     emailAddresses: existing ? [...(existing.emailAddresses || [])] : [],
     phoneNumbers: existing ? [...(existing.phoneNumbers || [])] : [],
     addresses: existing ? [...(existing.addresses || [])] : [],
@@ -441,6 +407,17 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     birthdays: [], events: [], urls: [], userDefined: [], biographies: []
   };
 
+  // 2. Organization (Work & School Split)
+  const company = cleanData(d['SMCI-XX19']);
+  if (company) {
+    payload.organizations.push({ name: company, title: cleanData(d['SMCI-XX21']), department: cleanData(d['SMCI-XX20']), type: 'work' });
+  }
+  const school = cleanData(d['SMCI-XX84']); // School Name
+  if (school) {
+    payload.organizations.push({ name: school, type: 'school' });
+  }
+
+  // 3. Labels
   if (newLabelIds && newLabelIds.length > 0) {
     const existingGroupIds = payload.memberships.map(m => m.contactGroupMembership.contactGroupResourceName);
     newLabelIds.forEach(id => {
@@ -448,9 +425,11 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     });
   }
 
+  // 4. Email Merge (Work/School Split)
   const mergeEmail = (val, type) => {
     const v = cleanData(val);
     if (v) {
+      // 指定タイプの既存メールを除去して上書き
       payload.emailAddresses = payload.emailAddresses.filter(e => e.type !== type);
       v.split(';').forEach(emailStr => {
         const clean = emailStr.trim();
@@ -460,7 +439,9 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   };
   mergeEmail(d['SMCI-XX22'], 'home');
   mergeEmail(d['SMCI-XX23'], 'work');
+  mergeEmail(d['SMCI-XX85'], 'school'); // School Email
 
+  // 5. Phone Merge
   const mergePhone = (val, type) => {
     if (cleanData(val)) {
       payload.phoneNumbers = payload.phoneNumbers.filter(p => p.type !== type);
@@ -472,17 +453,24 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergePhone(d['SMCI-XX26'], 'work');
   mergePhone(d['SMCI-XX27'], 'homeFax'); 
   mergePhone(d['SMCI-XX28'], 'workFax');
+  mergePhone(d['SMCI-XX86'], 'otherFax'); // School Fax
 
-  const mergeAddress = (val, type) => {
+  // 6. Address Merge
+  const mergeAddress = (val, type, label) => {
     const v = cleanData(val);
     if (v && !isDateString(v)) {
-      payload.addresses = payload.addresses.filter(a => a.type !== type);
-      payload.addresses.push({ formattedValue: String(v), type: type });
+      payload.addresses = payload.addresses.filter(a => a.type !== type && a.label !== label);
+      let addrObj = { formattedValue: String(v), type: type };
+      if (label) addrObj.label = label;
+      payload.addresses.push(addrObj);
     }
   };
   mergeAddress(d['SMCI-XX29'], 'home');
   mergeAddress(d['SMCI-XX30'], 'work');
+  mergeAddress(d['SMCI-XX87'], 'school'); // School Address
+  mergeAddress(d['SMCI-XX80'], 'other', '実家'); // Parents Home
 
+  // 7. Relations
   const mergeRelation = (personName, type) => {
     const pName = cleanData(personName);
     if (pName) {
@@ -500,6 +488,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     payload.relations.push({ person: customRelName, type: customRelType });
   }
 
+  // 8. Dates & URLs
   const bday = convertKokiToDate(d['SMCI-XX32']); 
   if (bday) payload.birthdays.push({ date: bday });
   
@@ -518,7 +507,8 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   pushUrl(d['SMCI-XX37'], 'profile');
   pushUrl(d['SMCI-XX38'], 'profile');
   pushUrl(d['SMCI-XX39'], 'profile');
-  pushUrl(d['SMCI-PNY02'], 'profile');
+  pushUrl(d['SMCI-PNY02'], 'profile'); 
+  pushUrl(d['SMCI-XX83'],  'profile'); // New LinkedIn
   pushUrl(d['SMCI-XX40'], 'homePage'); 
   pushUrl(d['SMCI-XX41'], 'homePage'); 
   pushUrl(d['SMCI-XX42'], 'homePage'); 
@@ -527,12 +517,21 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   pushUrl(d['SMCI-XX47'], 'homePage'); 
   pushUrl(d['SMCI-XX49'], 'homePage'); 
 
+  // 9. Custom Fields
   const setCF = (l, v) => { if (cleanData(v)) payload.userDefined.push({ key: l, value: String(v) }); };
   setCF("SMCI11", valSMCI11);
   setCF("SMCI9", valSMCI9);
   setCF("SM人物等級™️", d['SMCI-XX74']);
+  setCF("SMCI3", d['SMCI-XX78']); 
+  setCF("食物制限", d['SMCI-XX76']); 
+  setCF("英語表示名", d['SMCI-XX77']); 
+  setCF("別名", d['SMCI-XX79']); 
+  setCF("出身地", d['SMCI-XX81']); 
+  setCF("出生地", d['SMCI-XX82']); 
+  
   const engName = `${cleanData(d['SMCI-XX11'])} ${cleanData(d['SMCI-XX12'])} ${cleanData(d['SMCI-XX13'])}`.trim();
   setCF("英語名", engName);
+  
   ["SMCI-XX50","SMCI-XX51","SMCI-XX52","SMCI-XX53","SMCI-XX54","SMCI-XX55","SMCI-XX56","SMCI-XX57","SMCI-XX58","SMCI-XX59","SMCI-XX60"]
     .forEach(id => setCF(id, d[id]));
   setCF("支払金額(日本円)", d['SMCI-XX71']);
@@ -547,6 +546,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   let footer = `\n\n----\n${BASE_DELIMITER}\n${SCRIPT_VERSION} sync${getKokiDateString()} ↓\n\n`;
   footer += `SMCI11: ${valSMCI11}\n`;
   footer += `SMCI9: ${valSMCI9}\n`;
+  footer += `SMCI3: ${cleanData(d['SMCI-XX78'])}\n`; 
   footer += `英語名: ${engName}\n`;
   footer += `\n備考: ${cleanData(d['SMCI-XX75'])}`;
   
