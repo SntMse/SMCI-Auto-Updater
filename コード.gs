@@ -1,6 +1,6 @@
 /**
  * SMCI Database to Google Contacts Sync System
- * Version: 22.0 (Update: ID1.1 Support - School split, SMCI3, Food restrictions, etc.)
+ * Version: 23.0 (Update: School->CF, SchoolFax Label, Kata->Hira, New Timestamp)
  */
 
 // ==========================================
@@ -15,7 +15,7 @@ const TARGET_SPREADSHEET_IDS = [
 // ==========================================
 
 const START_ROW = 4;
-const SCRIPT_VERSION = "v22.0";
+const SCRIPT_VERSION = "v23.0";
 const BASE_DELIMITER = "SM://SMCI_AutoUpdater";
 const SYSTEM_LABEL = "SMCI Auto Updater"; 
 const TIME_LIMIT_MS = 270 * 1000; 
@@ -86,7 +86,6 @@ function runQuickSync() {
       
       if (maxRow < START_ROW) return;
 
-      // A列基準で最終行を特定
       const colAValues = sheet.getRange(START_ROW, 1, maxRow - START_ROW + 1, 1).getValues();
       let trueLastRow = -1;
       for (let i = colAValues.length - 1; i >= 0; i--) {
@@ -173,7 +172,6 @@ function resetSyncStatus() {
 function isTimeUp() {
   return (new Date().getTime() - executionStartTime) > TIME_LIMIT_MS;
 }
-
 
 // --- Initialization ---
 function initAllMaps() {
@@ -280,9 +278,30 @@ function extractImageUrl(formula) {
   const match = formula.match(/IMAGE\s*\(\s*["']([^"']+)["']/i);
   return match ? match[1] : null;
 }
-function getKokiDateString() {
-  const now = new Date();
-  return `${now.getFullYear() + 660}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+
+// カタカナ→ひらがな変換関数
+function kataToHira(str) {
+  if (!str) return "";
+  return str.replace(/[\u30a1-\u30f6]/g, function(match) {
+    var chr = match.charCodeAt(0) - 0x60;
+    return String.fromCharCode(chr);
+  });
+}
+
+// タイムスタンプ生成 (皇紀 + JST時刻)
+// 例: SM-ﾄ26860120075505
+function getTimestampString() {
+  const now = new Date(); // GASのタイムゾーン(JST)で取得される前提
+  const kokiYear = now.getFullYear() + 660;
+  
+  const pad = (n) => String(n).padStart(2, '0');
+  const mm = pad(now.getMonth() + 1);
+  const dd = pad(now.getDate());
+  const hh = pad(now.getHours());
+  const mi = pad(now.getMinutes());
+  const ss = pad(now.getSeconds());
+
+  return `SM-ﾄ${kokiYear}${mm}${dd}${hh}${mi}${ss}`;
 }
 
 // --- Single Row Process ---
@@ -359,11 +378,11 @@ function updateContactPhoto(resourceName, url) {
   } catch (e) { console.warn('Photo fail: ' + e.message); }
 }
 
-// --- Payload Builder (v22.0: ID1.1 Support) ---
+// --- Payload Builder (v23.0) ---
 function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   let updates = []; 
 
-  // 1. Name
+  // 1. Name & Furigana (Kata->Hira)
   let fName = cleanData(d['SMCI-XX05']); 
   let gName = cleanData(d['SMCI-XX07']); 
   let mName = cleanData(d['SMCI-XX06']); 
@@ -383,14 +402,15 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     updates.push("Name(Japanese)");
   }
 
+  // フリガナをひらがなに変換してセット
   const nameObj = {
     familyName: fName, 
     givenName: gName, 
     middleName: mName,
     honorificPrefix: cleanData(d['SMCI-XX04']), 
     honorificSuffix: cleanData(d['SMCI-XX14']),
-    phoneticFamilyName: cleanData(d['SMCI-XX08']), 
-    phoneticGivenName: cleanData(d['SMCI-XX10'])
+    phoneticFamilyName: kataToHira(cleanData(d['SMCI-XX08'])), 
+    phoneticGivenName: kataToHira(cleanData(d['SMCI-XX10']))
   };
 
   const nick = cleanData(d['SMCI-XX15']);
@@ -407,151 +427,14 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     birthdays: [], events: [], urls: [], userDefined: [], biographies: []
   };
 
-  // 2. Organization (Work & School Split)
+  // 2. Organization (Work only) - School moved to CF
   const company = cleanData(d['SMCI-XX19']);
   if (company) {
     payload.organizations.push({ name: company, title: cleanData(d['SMCI-XX21']), department: cleanData(d['SMCI-XX20']), type: 'work' });
-  }
-  const school = cleanData(d['SMCI-XX84']); // School Name
-  if (school) {
-    payload.organizations.push({ name: school, type: 'school' });
   }
 
   // 3. Labels
   if (newLabelIds && newLabelIds.length > 0) {
     const existingGroupIds = payload.memberships.map(m => m.contactGroupMembership.contactGroupResourceName);
     newLabelIds.forEach(id => {
-      if (!existingGroupIds.includes(id)) payload.memberships.push({ contactGroupMembership: { contactGroupResourceName: id } });
-    });
-  }
-
-  // 4. Email Merge (Work/School Split)
-  const mergeEmail = (val, type) => {
-    const v = cleanData(val);
-    if (v) {
-      // 指定タイプの既存メールを除去して上書き
-      payload.emailAddresses = payload.emailAddresses.filter(e => e.type !== type);
-      v.split(';').forEach(emailStr => {
-        const clean = emailStr.trim();
-        if (clean) payload.emailAddresses.push({ value: clean, type: type });
-      });
-    }
-  };
-  mergeEmail(d['SMCI-XX22'], 'home');
-  mergeEmail(d['SMCI-XX23'], 'work');
-  mergeEmail(d['SMCI-XX85'], 'school'); // School Email
-
-  // 5. Phone Merge
-  const mergePhone = (val, type) => {
-    if (cleanData(val)) {
-      payload.phoneNumbers = payload.phoneNumbers.filter(p => p.type !== type);
-      payload.phoneNumbers.push({ value: String(val), type: type });
-    }
-  };
-  mergePhone(d['SMCI-XX25'], 'mobile'); 
-  mergePhone(d['SMCI-XX24'], 'home'); 
-  mergePhone(d['SMCI-XX26'], 'work');
-  mergePhone(d['SMCI-XX27'], 'homeFax'); 
-  mergePhone(d['SMCI-XX28'], 'workFax');
-  mergePhone(d['SMCI-XX86'], 'otherFax'); // School Fax
-
-  // 6. Address Merge
-  const mergeAddress = (val, type, label) => {
-    const v = cleanData(val);
-    if (v && !isDateString(v)) {
-      payload.addresses = payload.addresses.filter(a => a.type !== type && a.label !== label);
-      let addrObj = { formattedValue: String(v), type: type };
-      if (label) addrObj.label = label;
-      payload.addresses.push(addrObj);
-    }
-  };
-  mergeAddress(d['SMCI-XX29'], 'home');
-  mergeAddress(d['SMCI-XX30'], 'work');
-  mergeAddress(d['SMCI-XX87'], 'school'); // School Address
-  mergeAddress(d['SMCI-XX80'], 'other', '実家'); // Parents Home
-
-  // 7. Relations
-  const mergeRelation = (personName, type) => {
-    const pName = cleanData(personName);
-    if (pName) {
-      payload.relations = payload.relations.filter(r => r.type !== type);
-      payload.relations.push({ person: pName, type: type });
-    }
-  };
-  mergeRelation(d['SMCI-XX62'], 'spouse'); 
-  mergeRelation(d['SMCI-XX63'], 'father'); 
-  mergeRelation(d['SMCI-XX64'], 'mother'); 
-  const customRelType = cleanData(d['SMCI-XX65']); 
-  const customRelName = cleanData(d['SMCI-XX66']); 
-  if (customRelType && customRelName) {
-    payload.relations = payload.relations.filter(r => !(r.type === customRelType && r.person === customRelName));
-    payload.relations.push({ person: customRelName, type: customRelType });
-  }
-
-  // 8. Dates & URLs
-  const bday = convertKokiToDate(d['SMCI-XX32']); 
-  if (bday) payload.birthdays.push({ date: bday });
-  
-  const addEvent = (v, typeStr) => {
-    const dt = convertKokiToDate(v);
-    if (dt) payload.events.push({ date: dt, type: typeStr });
-  };
-  addEvent(d['SMCI-XX31'], '人物把握日時');
-  addEvent(d['SMCI-XX33'], '最終面会年月日');
-  addEvent(d['SMCI-XX34'], '死去日時');
-
-  const pushUrl = (v, type) => { 
-    if (cleanData(v)) String(v).split(';').forEach(url => payload.urls.push({ value: url.trim(), type: type }));
-  };
-  pushUrl(d['SMCI-XX36'], 'homePage'); 
-  pushUrl(d['SMCI-XX37'], 'profile');
-  pushUrl(d['SMCI-XX38'], 'profile');
-  pushUrl(d['SMCI-XX39'], 'profile');
-  pushUrl(d['SMCI-PNY02'], 'profile'); 
-  pushUrl(d['SMCI-XX83'],  'profile'); // New LinkedIn
-  pushUrl(d['SMCI-XX40'], 'homePage'); 
-  pushUrl(d['SMCI-XX41'], 'homePage'); 
-  pushUrl(d['SMCI-XX42'], 'homePage'); 
-  pushUrl(d['SMCI-XX43'], 'homePage'); 
-  pushUrl(d['SMCI-XX45'], 'homePage'); 
-  pushUrl(d['SMCI-XX47'], 'homePage'); 
-  pushUrl(d['SMCI-XX49'], 'homePage'); 
-
-  // 9. Custom Fields
-  const setCF = (l, v) => { if (cleanData(v)) payload.userDefined.push({ key: l, value: String(v) }); };
-  setCF("SMCI11", valSMCI11);
-  setCF("SMCI9", valSMCI9);
-  setCF("SM人物等級™️", d['SMCI-XX74']);
-  setCF("SMCI3", d['SMCI-XX78']); 
-  setCF("食物制限", d['SMCI-XX76']); 
-  setCF("英語表示名", d['SMCI-XX77']); 
-  setCF("別名", d['SMCI-XX79']); 
-  setCF("出身地", d['SMCI-XX81']); 
-  setCF("出生地", d['SMCI-XX82']); 
-  
-  const engName = `${cleanData(d['SMCI-XX11'])} ${cleanData(d['SMCI-XX12'])} ${cleanData(d['SMCI-XX13'])}`.trim();
-  setCF("英語名", engName);
-  
-  ["SMCI-XX50","SMCI-XX51","SMCI-XX52","SMCI-XX53","SMCI-XX54","SMCI-XX55","SMCI-XX56","SMCI-XX57","SMCI-XX58","SMCI-XX59","SMCI-XX60"]
-    .forEach(id => setCF(id, d[id]));
-  setCF("支払金額(日本円)", d['SMCI-XX71']);
-  setCF("支払金額(米ドル)", d['SMCI-XX72']);
-  setCF("SM通貨", d['SMCI-XX73']);
-
-  let userNotes = "";
-  if (existing && existing.biographies) {
-    userNotes = existing.biographies[0].value.split(BASE_DELIMITER)[0];
-    userNotes = userNotes.replace(/----\s*$/, "").trim(); 
-  }
-  let footer = `\n\n----\n${BASE_DELIMITER}\n${SCRIPT_VERSION} sync${getKokiDateString()} ↓\n\n`;
-  footer += `SMCI11: ${valSMCI11}\n`;
-  footer += `SMCI9: ${valSMCI9}\n`;
-  footer += `SMCI3: ${cleanData(d['SMCI-XX78'])}\n`; 
-  footer += `英語名: ${engName}\n`;
-  footer += `\n備考: ${cleanData(d['SMCI-XX75'])}`;
-  
-  payload.biographies.push({ value: (userNotes + footer).trim() });
-  if (existing) payload.etag = existing.etag;
-  updates.push("Processed"); 
-  return { payload: payload, updates: updates };
-}
+      if (!existingGroupIds.includes(id)) payload.memberships.push({ contactGroupMembership: { contactGroupResourceName: id
