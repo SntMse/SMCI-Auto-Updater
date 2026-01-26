@@ -1,15 +1,40 @@
 /**
  * File: Utils_Helpers.gs
  * Helper functions
+ * v26.0 Fix: Enhanced cleanData to strictly remove UNK, NIL, #N/A, etc.
  */
 
 function cleanData(val) {
+  // null, undefined check
   if (val === null || val === undefined) return "";
+  
+  // Date object check
   if (val instanceof Date) return val;
-  if (val.toString().includes("CellImage") || val.toString() === "Obj") return "";
-  const str = String(val).trim();
-  const ignoreList = ["NIL", "UNK", "取得中", "#N/A", "N/A"];
-  if (ignoreList.includes(str)) return "";
+  
+  // Convert to string
+  let str = String(val);
+  
+  // remove CellImage objects
+  if (str.includes("CellImage") || str === "Obj") return "";
+  
+  // Trim spaces (full-width & half-width)
+  str = str.trim();
+  
+  // Case-insensitive check for ignore list
+  const upperStr = str.toUpperCase();
+  const ignoreList = [
+    "NIL", 
+    "UNK", 
+    "取得中", 
+    "#N/A", 
+    "N/A", 
+    "=NA()", 
+    "0", // 0も場合によっては無視したいケースがあれば追加、今回は基本リストのみ
+    ""
+  ];
+  
+  if (ignoreList.includes(upperStr)) return "";
+  
   return str;
 }
 
@@ -40,7 +65,6 @@ function extractImageUrl(formula) {
   return match ? match[1] : null;
 }
 
-// 【新規】カタカナ→ひらがな変換
 function kataToHira(str) {
   if (!str) return "";
   return str.replace(/[\u30a1-\u30f6]/g, function(match) {
@@ -49,13 +73,10 @@ function kataToHira(str) {
   });
 }
 
-// 【新規】タイムスタンプ生成 (SM-ﾄ + 皇紀 + JST時刻)
-// 例: SM-ﾄ26860120075505
 function getTimestampString() {
   const now = new Date();
   const kokiYear = now.getFullYear() + 660;
   
-  // GASのタイムゾーン設定(JST)に合わせて時刻文字列を生成
   const mm = Utilities.formatDate(now, "JST", "MM");
   const dd = Utilities.formatDate(now, "JST", "dd");
   const hh = Utilities.formatDate(now, "JST", "HH");
