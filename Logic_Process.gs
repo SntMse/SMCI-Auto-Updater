@@ -1,7 +1,7 @@
 /**
  * File: Logic_Process.gs
  * Row processing and Payload construction
- * v24.1 Fix: Changed 'label' property to 'formattedType' for Custom Labels
+ * v25.0 Fix: Split Multi-value fields (Nicknames, CFs) by semicolon ';'
  */
 
 function processSingleRow(sheet, rowNumber) {
@@ -103,11 +103,9 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     phoneticGivenName: kataToHira(cleanData(d['SMCI-XX10']))   
   };
 
-  const nick = cleanData(d['SMCI-XX15']);
-
   const payload = {
     names: [nameObj],
-    nicknames: nick ? [{ value: nick }] : [],
+    nicknames: [], // 初期化
     organizations: [],
     emailAddresses: existing ? [...(existing.emailAddresses || [])] : [],
     phoneNumbers: existing ? [...(existing.phoneNumbers || [])] : [],
@@ -116,6 +114,15 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     relations: existing ? [...(existing.relations || [])] : [], 
     birthdays: [], events: [], urls: [], userDefined: [], biographies: []
   };
+
+  // 1.1 Nicknames (Multi-value split)
+  const nickVal = cleanData(d['SMCI-XX15']);
+  if (nickVal) {
+    nickVal.split(';').forEach(n => {
+      const cleanN = n.trim();
+      if (cleanN) payload.nicknames.push({ value: cleanN });
+    });
+  }
 
   // 2. Organization
   const company = cleanData(d['SMCI-XX19']);
@@ -146,18 +153,13 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeEmail(d['SMCI-XX23'], 'work');
   mergeEmail(d['SMCI-XX85'], 'school');
 
-  // 5. Phone Merge (Fix: Use 'formattedType' instead of 'label')
+  // 5. Phone Merge
   const mergePhone = (val, type, label) => {
     const v = cleanData(val);
     if (v) {
-      // 既存の同タイプ・同ラベルを除去
       payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.formattedType === label));
-      
       let phoneObj = { value: String(v), type: type };
-      
-      // 【重要修正】label ではなく formattedType を使う
       if (label) phoneObj.formattedType = label; 
-      
       payload.phoneNumbers.push(phoneObj);
     }
   };
@@ -168,17 +170,13 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergePhone(d['SMCI-XX28'], 'workFax');
   mergePhone(d['SMCI-XX86'], 'other', 'FAX（学校）');
 
-  // 6. Address Merge (Fix: Use 'formattedType' instead of 'label')
+  // 6. Address Merge
   const mergeAddress = (val, type, label) => {
     const v = cleanData(val);
     if (v && !isDateString(v)) {
       payload.addresses = payload.addresses.filter(a => !(a.type === type && a.formattedType === label));
-      
       let addrObj = { formattedValue: String(v), type: type };
-      
-      // 【重要修正】label ではなく formattedType を使う
       if (label) addrObj.formattedType = label;
-      
       payload.addresses.push(addrObj);
     }
   };
@@ -234,8 +232,18 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   pushUrl(d['SMCI-XX47'], 'homePage'); 
   pushUrl(d['SMCI-XX49'], 'homePage'); 
 
-  // 9. Custom Fields
-  const setCF = (l, v) => { if (cleanData(v)) payload.userDefined.push({ key: l, value: String(v) }); };
+  // 9. Custom Fields (Multi-value split support)
+  // 【重要修正】セミコロン区切りで分割して登録する
+  const setCF = (l, v) => { 
+    const val = cleanData(v);
+    if (val) {
+      val.split(';').forEach(s => {
+        const cleanS = s.trim();
+        if (cleanS) payload.userDefined.push({ key: l, value: cleanS });
+      });
+    }
+  };
+
   setCF("SMCI11", valSMCI11);
   setCF("SMCI9", valSMCI9);
   setCF("SM人物等級™️", d['SMCI-XX74']);
@@ -243,6 +251,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("食物制限", d['SMCI-XX76']); 
   setCF("英語表示名", d['SMCI-XX77']); 
   setCF("別名", d['SMCI-XX79']); 
+  setCF("愛称", d['SMCI-XX16']); // 【追加】愛称もCFへ
   setCF("出身地", d['SMCI-XX81']); 
   setCF("出生地", d['SMCI-XX82']); 
   setCF("学校名", d['SMCI-XX84']); 
