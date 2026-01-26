@@ -1,25 +1,31 @@
 /**
  * SMCI Database to Google Contacts Sync System
- * Version: 26.0 (Fix: Strict Ignore Logic for UNK/NIL & Notes Format Update)
+ * Version: 27.0 (Security Update: Use ScriptProperties for IDs)
  * File: Config_Main.gs
  */
 
 // ==========================================
-// 【設定】対象のスプレッドシートIDリスト
-const TARGET_SPREADSHEET_IDS = [
-  "1GQQy2hAvZ8afRxySWcpayQLaOIN7MkrYmFcKrauKOiw", //SMCI-PKJ管理表
-  "1610hT2vzaY-7d9IXktwv-eTWeVyBh5p_cxiHHYwI8g8", //SMCI-PNY管理表
-  "1mUnPSb1vzkAgLkv4FA_8VLI-o3JDzN01eg3U3XV3LBk", //SMCI-PFA管理表
-  "10TF7E4yLpYzy7RXJwWpoMbnfY-oc2Kfm_W2AJR1xhHU", //SMCI-PYT管理表
-  "1GbNdY1UdQNDCQ5feVY65jnqIGsjxTTegla_vk0s6MN0"  //SMCI管理表
-]; 
+// 【設定】秘密情報（SS-IDなど）はスクリプトプロパティから読み込みます
 // ==========================================
-
 const START_ROW = 4;
-const SCRIPT_VERSION = "v26.0"; // バージョン更新
+const SCRIPT_VERSION = "v27.0";
 const BASE_DELIMITER = "SM://SMCI_AutoUpdater";
 const SYSTEM_LABEL = "SMCI Auto Updater"; 
 const TIME_LIMIT_MS = 270 * 1000; 
+
+// ▼ プロパティストアからIDリストを取得する関数
+function getTargetSpreadsheetIds() {
+  const props = PropertiesService.getScriptProperties();
+  const idsString = props.getProperty('TARGET_SS_IDS');
+  
+  if (!idsString) {
+    console.error("❌ エラー: スクリプトプロパティ 'TARGET_SS_IDS' が設定されていません。_Setup_Secrets.gsを実行しましたか？");
+    return [];
+  }
+  
+  // カンマ区切りの文字列を配列に戻して返す
+  return idsString.split(',').map(s => s.trim());
+}
 
 // グローバルキャッシュ
 let groupMap = new Map();
@@ -41,6 +47,8 @@ function onOpen() {
       .addItem('【手動】フル更新 (中断・再開対応)', 'mainSyncProcess')
       .addSeparator()
       .addItem('進行状況をリセット', 'resetSyncStatus')
+      .addSeparator()
+      .addItem('☁️ GitHubから最新コードを取得', 'pullFromGitHub') // ★メニューに追加
       .addToUi();
   } catch (e) {
     console.log("Running in standalone/trigger mode. Menu not created.");
@@ -59,10 +67,14 @@ function setupAutomatedTriggers() {
 
 function runQuickSync() {
   console.log("🚀 Quick Sync Started...");
-  let fileIds = TARGET_SPREADSHEET_IDS;
+  
+  // ★重要変更：IDを直接書かず、関数経由で取得
+  let fileIds = getTargetSpreadsheetIds();
+  
   if (!fileIds || fileIds.length === 0) {
+    // ID設定がない、かつ手動実行ならActiveSheetを使う
     try { fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()]; } 
-    catch (e) { console.warn("No Target IDs. Skipped."); return; }
+    catch (e) { console.warn("No Target IDs and no active sheet. Skipped."); return; }
   }
 
   initAllMaps();
@@ -104,7 +116,9 @@ function mainSyncProcess() {
   executionStartTime = new Date().getTime();
   const props = PropertiesService.getScriptProperties();
   
-  let fileIds = TARGET_SPREADSHEET_IDS;
+  // ★重要変更：IDを直接書かず、関数経由で取得
+  let fileIds = getTargetSpreadsheetIds();
+
   if (!fileIds || fileIds.length === 0) {
     try { fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()]; }
     catch (e) { console.error("No Target IDs."); return; }
