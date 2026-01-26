@@ -1,27 +1,22 @@
 /**
  * File: Utils_Helpers.gs
  * Helper functions
- * v26.0 Fix: Enhanced cleanData to strictly remove UNK, NIL, #N/A, etc.
+ * Version: 26.1
  */
 
 function cleanData(val) {
-  // null, undefined check
   if (val === null || val === undefined) return "";
-  
-  // Date object check
   if (val instanceof Date) return val;
   
-  // Convert to string
   let str = String(val);
   
-  // remove CellImage objects
+  // セル内画像のオブジェクト文字を除去
   if (str.includes("CellImage") || str === "Obj") return "";
   
-  // Trim spaces (full-width & half-width)
   str = str.trim();
-  
-  // Case-insensitive check for ignore list
   const upperStr = str.toUpperCase();
+  
+  // 除外リスト (完全一致で弾く)
   const ignoreList = [
     "NIL", 
     "UNK", 
@@ -29,7 +24,7 @@ function cleanData(val) {
     "#N/A", 
     "N/A", 
     "=NA()", 
-    "0", // 0も場合によっては無視したいケースがあれば追加、今回は基本リストのみ
+    "0", 
     ""
   ];
   
