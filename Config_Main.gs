@@ -1,6 +1,6 @@
 /**
  * SMCI Database to Google Contacts Sync System
- * Version: 24.0 (Modularized)
+ * Version: 26.0 (Fix: Strict Ignore Logic for UNK/NIL & Notes Format Update)
  * File: Config_Main.gs
  */
 
@@ -16,12 +16,12 @@ const TARGET_SPREADSHEET_IDS = [
 // ==========================================
 
 const START_ROW = 4;
-const SCRIPT_VERSION = "v24.0";
+const SCRIPT_VERSION = "v26.0"; // バージョン更新
 const BASE_DELIMITER = "SM://SMCI_AutoUpdater";
 const SYSTEM_LABEL = "SMCI Auto Updater"; 
 const TIME_LIMIT_MS = 270 * 1000; 
 
-// グローバルキャッシュ (API_Managerで使用)
+// グローバルキャッシュ
 let groupMap = new Map();
 let mapSMCI11 = new Map();
 let mapSMCI9 = new Map();
@@ -54,12 +54,9 @@ function setupAutomatedTriggers() {
   ScriptApp.newTrigger('runQuickSync').timeBased().everyMinutes(5).create();
   ScriptApp.newTrigger('mainSyncProcess').timeBased().everyHours(1).create();
     
-  console.log("✅ Triggers set successfully: QuickSync(5min), FullSync(1hour).");
+  console.log("✅ Triggers set successfully.");
 }
 
-/**
- * ■ クイック更新 (ロジックはLogic_Process.gsへ委譲)
- */
 function runQuickSync() {
   console.log("🚀 Quick Sync Started...");
   let fileIds = TARGET_SPREADSHEET_IDS;
@@ -68,7 +65,7 @@ function runQuickSync() {
     catch (e) { console.warn("No Target IDs. Skipped."); return; }
   }
 
-  initAllMaps(); // API_Manager.gs
+  initAllMaps();
 
   fileIds.forEach((fileId, idx) => {
     try {
@@ -78,7 +75,6 @@ function runQuickSync() {
       
       if (maxRow < START_ROW) return;
 
-      // A列基準で最終行を特定
       const colAValues = sheet.getRange(START_ROW, 1, maxRow - START_ROW + 1, 1).getValues();
       let trueLastRow = -1;
       for (let i = colAValues.length - 1; i >= 0; i--) {
@@ -95,7 +91,7 @@ function runQuickSync() {
       console.log(`[QuickSync] File ${idx+1}: Processing rows ${processStart} to ${trueLastRow}`);
 
       for (let r = processStart; r <= trueLastRow; r++) {
-        processSingleRow(sheet, r); // Logic_Process.gs
+        processSingleRow(sheet, r);
       }
     } catch (e) {
       console.error(`QuickSync Failed for ID ${fileId}: ${e.message}`);
@@ -104,9 +100,6 @@ function runQuickSync() {
   console.log("✅ Quick Sync Completed.");
 }
 
-/**
- * ■ フル更新
- */
 function mainSyncProcess() {
   executionStartTime = new Date().getTime();
   const props = PropertiesService.getScriptProperties();
@@ -114,7 +107,7 @@ function mainSyncProcess() {
   let fileIds = TARGET_SPREADSHEET_IDS;
   if (!fileIds || fileIds.length === 0) {
     try { fileIds = [SpreadsheetApp.getActiveSpreadsheet().getId()]; }
-    catch (e) { console.error("No Target Spreadsheet IDs."); return; }
+    catch (e) { console.error("No Target IDs."); return; }
   }
 
   let currentFileIndex = parseInt(props.getProperty('SYNC_FILE_INDEX') || '0');
@@ -125,7 +118,7 @@ function mainSyncProcess() {
   }
 
   console.log(`🔄 Full Sync Resumed... FileIndex: ${currentFileIndex}, Row: ${currentRowIndex}`);
-  initAllMaps(); // API_Manager.gs
+  initAllMaps();
 
   for (let i = currentFileIndex; i < fileIds.length; i++) {
     const fileId = fileIds[i];
@@ -134,7 +127,7 @@ function mainSyncProcess() {
       sheet = SpreadsheetApp.openById(fileId).getSheets()[0];
       console.log(`Processing File [${i + 1}/${fileIds.length}]: ${sheet.getParent().getName()}`);
     } catch (e) {
-      console.error(`Can't open spreadsheet ID: ${fileId}. Skipping.`);
+      console.error(`Skipping ID: ${fileId}`);
       continue;
     }
 
@@ -148,7 +141,7 @@ function mainSyncProcess() {
         console.warn(`⏳ Time Limit. Paused at File[${i}], Row[${r}].`);
         return; 
       }
-      processSingleRow(sheet, r); // Logic_Process.gs
+      processSingleRow(sheet, r);
     }
   }
 
@@ -159,7 +152,6 @@ function mainSyncProcess() {
 function resetSyncStatus() {
   PropertiesService.getScriptProperties().deleteProperty('SYNC_FILE_INDEX');
   PropertiesService.getScriptProperties().deleteProperty('SYNC_ROW_INDEX');
-  console.log("Sync status reset.");
 }
 
 function isTimeUp() {
