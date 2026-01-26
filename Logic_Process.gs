@@ -1,7 +1,7 @@
 /**
  * File: Logic_Process.gs
  * Row processing and Payload construction
- * Version: 25.1 (Full Support for Semicolon-separated Multi-values & Paired Fields)
+ * Version: 26.0 (Update: ID1.2 Support - Added Faculty/Dept SMCI-XX88)
  */
 
 function processSingleRow(sheet, rowNumber) {
@@ -125,9 +125,9 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   });
 
   // --- 2. Organization (Company/Dept/Title Paired) ---
-  const companies = getSplitValues(d['SMCI-XX19']); // XX19 会社名
-  const depts     = getSplitValues(d['SMCI-XX20']); // XX20 部門
-  const titles    = getSplitValues(d['SMCI-XX21']); // XX21 役職
+  const companies = getSplitValues(d['SMCI-XX19']); 
+  const depts     = getSplitValues(d['SMCI-XX20']); 
+  const titles    = getSplitValues(d['SMCI-XX21']); 
   
   const maxOrg = Math.max(companies.length, depts.length, titles.length);
   for(let i=0; i<maxOrg; i++) {
@@ -198,11 +198,11 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   };
   mergeAddress(d['SMCI-XX29'], 'home');
   mergeAddress(d['SMCI-XX30'], 'work');
-  mergeAddress(d['SMCI-XX87'], 'school'); // Standard type 'school' now supported by API or mapped to other
+  mergeAddress(d['SMCI-XX87'], 'school'); 
   mergeAddress(d['SMCI-XX80'], 'other', '実家');
 
   // --- 7. Relations (Paired XX65 & XX66, plus others) ---
-  // A. Individual Relations (Parent/Spouse) - also allow split
+  // A. Individual Relations
   const mergeSimpleRel = (val, type) => {
     getSplitValues(val).forEach(p => {
       if(p) payload.relations.push({ person: p, type: type });
@@ -212,15 +212,14 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeSimpleRel(d['SMCI-XX63'], 'father');
   mergeSimpleRel(d['SMCI-XX64'], 'mother');
 
-  // B. Custom Relations (Paired Type & Name)
-  const relTypes = getSplitValues(d['SMCI-XX65']); // 関係
-  const relNames = getSplitValues(d['SMCI-XX66']); // 名前
+  // B. Custom Relations
+  const relTypes = getSplitValues(d['SMCI-XX65']); 
+  const relNames = getSplitValues(d['SMCI-XX66']); 
   const maxRel = Math.max(relTypes.length, relNames.length);
   for(let i=0; i<maxRel; i++) {
     const rt = relTypes[i] || "";
     const rn = relNames[i] || "";
     if (rt && rn) {
-      // 既存の重複削除は複雑になるため、追加のみ行う（API側でマージされるか、重複時は複数登録される）
       payload.relations.push({ person: rn, type: rt });
     }
   }
@@ -232,26 +231,25 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     });
   };
   pushUrl(d['SMCI-XX36'], 'homePage'); 
-  pushUrl(d['SMCI-XX37'], 'profile'); // Facebook
-  pushUrl(d['SMCI-XX38'], 'profile'); // X
-  pushUrl(d['SMCI-XX39'], 'profile'); // Instagram
-  pushUrl(d['SMCI-PNY02'], 'profile'); // LinkedIn (Old)
-  pushUrl(d['SMCI-XX83'], 'profile');  // LinkedIn (New)
-  pushUrl(d['SMCI-XX40'], 'homePage'); // TikTok
-  pushUrl(d['SMCI-XX41'], 'homePage'); // Skype
-  pushUrl(d['SMCI-XX42'], 'homePage'); // Snapchat
-  pushUrl(d['SMCI-XX43'], 'homePage'); // TMDb
+  pushUrl(d['SMCI-XX37'], 'profile');
+  pushUrl(d['SMCI-XX38'], 'profile');
+  pushUrl(d['SMCI-XX39'], 'profile');
+  pushUrl(d['SMCI-PNY02'], 'profile'); 
+  pushUrl(d['SMCI-XX83'], 'profile');  
+  pushUrl(d['SMCI-XX40'], 'homePage');
+  pushUrl(d['SMCI-XX41'], 'homePage');
+  pushUrl(d['SMCI-XX42'], 'homePage');
+  pushUrl(d['SMCI-XX43'], 'homePage');
 
-  // Related Links (Paired XX46 & XX47)
+  // Related Links
   const linkNames = getSplitValues(d['SMCI-XX46']);
   const linkUrls  = getSplitValues(d['SMCI-XX47']);
   const maxLink = Math.max(linkNames.length, linkUrls.length);
   for(let i=0; i<maxLink; i++) {
-    const ln = linkNames[i] || ""; // 名前がない場合は空文字（APIによってはラベルが必要）
+    const ln = linkNames[i] || ""; 
     const lu = linkUrls[i] || "";
     if (lu) {
       let urlObj = { value: lu };
-      // ラベルがある場合、またはGoogle標準以外のタイプとして扱う場合
       if (ln) urlObj.formattedType = ln; 
       else urlObj.type = 'other';
       payload.urls.push(urlObj);
@@ -271,13 +269,14 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("SMCI3", d['SMCI-XX78']);
   setCF("食物制限", d['SMCI-XX76']);
   setCF("英語表示名", d['SMCI-XX77']);
-  setCF("愛称", d['SMCI-XX16']); // XX16
-  setCF("別名", d['SMCI-XX79']); // XX79
+  setCF("愛称", d['SMCI-XX16']);
+  setCF("別名", d['SMCI-XX79']);
   setCF("性別", d['SMCI-XX17']);
   setCF("代名詞", d['SMCI-XX18']);
   setCF("出身地", d['SMCI-XX81']);
   setCF("出生地", d['SMCI-XX82']);
   setCF("学校名", d['SMCI-XX84']); 
+  setCF("学部学科等", d['SMCI-XX88']); // 【追加】学部学科等 (ID1.2)
 
   // English Name CF
   const engName = `${cleanData(d['SMCI-XX11'])} ${cleanData(d['SMCI-XX12'])} ${cleanData(d['SMCI-XX13'])}`.trim();
@@ -291,7 +290,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("支払金額(米ドル)", d['SMCI-XX72']);
   setCF("SM通貨", d['SMCI-XX73']);
 
-  // Dates (Single values usually, but logic kept simple)
+  // Dates
   const bday = convertKokiToDate(d['SMCI-XX32']); 
   if (bday) payload.birthdays.push({ date: bday });
   
