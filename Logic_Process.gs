@@ -1,7 +1,7 @@
 /**
  * File: Logic_Process.gs
  * Row processing and Payload construction
- * Version: 26.0 (Update: Notes format & Strict UNK check applied)
+ * Version: 26.1 (Fix: Force Overwrite/Delete for Empty Fields)
  */
 
 function processSingleRow(sheet, rowNumber) {
@@ -71,7 +71,6 @@ function processSingleRow(sheet, rowNumber) {
 }
 
 function getSplitValues(str) {
-  // cleanDataを通してから分割することで、"UNK"単体などは空文字になり、除去される
   const cleaned = cleanData(str);
   if (!cleaned) return [];
   return cleaned.split(';').map(s => s.trim()).filter(s => s !== "");
@@ -146,31 +145,32 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     });
   }
 
-  // 4. Emails
+  // 4. Emails (Force Overwrite)
   const mergeEmail = (val, type) => {
+    // 【重要】まず既存の同じタイプを全て削除する（空欄であっても削除して整合性を保つ）
+    payload.emailAddresses = payload.emailAddresses.filter(e => e.type !== type);
+    
+    // 新しい値があれば追加する
     const vList = getSplitValues(val);
-    if (vList.length > 0) {
-      payload.emailAddresses = payload.emailAddresses.filter(e => e.type !== type);
-      vList.forEach(email => {
-        payload.emailAddresses.push({ value: email, type: type });
-      });
-    }
+    vList.forEach(email => {
+      payload.emailAddresses.push({ value: email, type: type });
+    });
   };
   mergeEmail(d['SMCI-XX22'], 'home');
   mergeEmail(d['SMCI-XX23'], 'work');
   mergeEmail(d['SMCI-XX85'], 'school');
 
-  // 5. Phones
+  // 5. Phones (Force Overwrite)
   const mergePhone = (val, type, label) => {
+    // 【重要】まず既存を削除
+    payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.formattedType === label));
+    
     const vList = getSplitValues(val);
-    if (vList.length > 0) {
-      payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.formattedType === label));
-      vList.forEach(ph => {
-        let obj = { value: ph, type: type };
-        if(label) obj.formattedType = label; 
-        payload.phoneNumbers.push(obj);
-      });
-    }
+    vList.forEach(ph => {
+      let obj = { value: ph, type: type };
+      if(label) obj.formattedType = label; 
+      payload.phoneNumbers.push(obj);
+    });
   };
   mergePhone(d['SMCI-XX24'], 'home'); 
   mergePhone(d['SMCI-XX25'], 'mobile'); 
@@ -179,27 +179,31 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergePhone(d['SMCI-XX28'], 'workFax');
   mergePhone(d['SMCI-XX86'], 'other', 'FAX（学校）');
 
-  // 6. Address
+  // 6. Address (Force Overwrite)
   const mergeAddress = (val, type, label) => {
+    // 【重要】まず既存を削除
+    payload.addresses = payload.addresses.filter(a => !(a.type === type && a.formattedType === label));
+    
     const vList = getSplitValues(val);
-    if (vList.length > 0) {
-      payload.addresses = payload.addresses.filter(a => !(a.type === type && a.formattedType === label));
-      vList.forEach(addr => {
-        if(!isDateString(addr)) {
-          let obj = { formattedValue: addr, type: type };
-          if(label) obj.formattedType = label;
-          payload.addresses.push(obj);
-        }
-      });
-    }
+    vList.forEach(addr => {
+      if(!isDateString(addr)) {
+        let obj = { formattedValue: addr, type: type };
+        if(label) obj.formattedType = label;
+        payload.addresses.push(obj);
+      }
+    });
   };
   mergeAddress(d['SMCI-XX29'], 'home');
   mergeAddress(d['SMCI-XX30'], 'work');
   mergeAddress(d['SMCI-XX87'], 'school'); 
   mergeAddress(d['SMCI-XX80'], 'other', '実家');
 
-  // 7. Relations
+  // 7. Relations (Force Overwrite)
+  // Simple Relations
   const mergeSimpleRel = (val, type) => {
+    // 【重要】まず既存の同じタイプを削除
+    payload.relations = payload.relations.filter(r => r.type !== type);
+    
     getSplitValues(val).forEach(p => {
       payload.relations.push({ person: p, type: type });
     });
@@ -208,6 +212,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeSimpleRel(d['SMCI-XX63'], 'father');
   mergeSimpleRel(d['SMCI-XX64'], 'mother');
 
+  // Custom Relations
   const relTypes = getSplitValues(d['SMCI-XX65']); 
   const relNames = getSplitValues(d['SMCI-XX66']); 
   const maxRel = Math.max(relTypes.length, relNames.length);
@@ -215,6 +220,8 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     const rt = relTypes[i] || "";
     const rn = relNames[i] || "";
     if (rt && rn) {
+      // カスタム関係は種類が多岐にわたるため、ここでは追加のみ行う（重複チェックは複雑になるため省略）
+      // 必要であれば完全一致削除を追加可能
       payload.relations.push({ person: rn, type: rt });
     }
   }
@@ -293,14 +300,14 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   addEvent(d['SMCI-XX33'], '最終面会年月日');
   addEvent(d['SMCI-XX34'], '死去日時');
 
-  // --- Biography ---
+  // --- Biography / Footer ---
   let userNotes = "";
   if (existing && existing.biographies) {
     userNotes = existing.biographies[0].value.split(BASE_DELIMITER)[0];
     userNotes = userNotes.replace(/----\s*$/, "").trim(); 
   }
   
-  // 【修正】指定フォーマット: v26.0 (SM-ﾄ...)
+  // v26.1 指定フォーマット
   let footer = `\n\n----\n${BASE_DELIMITER}\n${SCRIPT_VERSION} (${getTimestampString()})\n\n`;
   footer += `SMCI11: ${valSMCI11}\n`;
   footer += `SMCI9: ${valSMCI9}\n`;
