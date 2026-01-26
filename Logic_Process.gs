@@ -1,7 +1,7 @@
 /**
  * File: Logic_Process.gs
  * Row processing and Payload construction
- * Version: 26.0 (Update: ID1.2 Support - Added Faculty/Dept SMCI-XX88)
+ * Version: 26.0 (Update: Notes format & Strict UNK check applied)
  */
 
 function processSingleRow(sheet, rowNumber) {
@@ -70,21 +70,20 @@ function processSingleRow(sheet, rowNumber) {
   }
 }
 
-// --- Helper for splitting and zipping arrays ---
 function getSplitValues(str) {
-  if (!str) return [];
-  return String(str).split(';').map(s => s.trim());
+  // cleanDataを通してから分割することで、"UNK"単体などは空文字になり、除去される
+  const cleaned = cleanData(str);
+  if (!cleaned) return [];
+  return cleaned.split(';').map(s => s.trim()).filter(s => s !== "");
 }
 
-// --- Payload Builder ---
 function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   
-  // 1. Name (Structured)
+  // 1. Name
   let fName = cleanData(d['SMCI-XX05']); 
   let gName = cleanData(d['SMCI-XX07']); 
   let mName = cleanData(d['SMCI-XX06']); 
 
-  // Name Fallback Logic
   if (!fName && !gName) {
     const enLast  = cleanData(d['SMCI-XX13']);
     const enFirst = cleanData(d['SMCI-XX11']);
@@ -119,12 +118,12 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     birthdays: [], events: [], urls: [], userDefined: [], biographies: []
   };
 
-  // --- 1.1 Nicknames (XX15) ---
+  // 1.1 Nicknames
   getSplitValues(d['SMCI-XX15']).forEach(v => {
-    if(v) payload.nicknames.push({ value: v });
+    payload.nicknames.push({ value: v });
   });
 
-  // --- 2. Organization (Company/Dept/Title Paired) ---
+  // 2. Organization
   const companies = getSplitValues(d['SMCI-XX19']); 
   const depts     = getSplitValues(d['SMCI-XX20']); 
   const titles    = getSplitValues(d['SMCI-XX21']); 
@@ -139,7 +138,7 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     }
   }
 
-  // --- 3. Labels ---
+  // 3. Labels
   if (newLabelIds && newLabelIds.length > 0) {
     const existingGroupIds = payload.memberships.map(m => m.contactGroupMembership.contactGroupResourceName);
     newLabelIds.forEach(id => {
@@ -147,13 +146,13 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     });
   }
 
-  // --- 4. Emails (Split) ---
+  // 4. Emails
   const mergeEmail = (val, type) => {
     const vList = getSplitValues(val);
     if (vList.length > 0) {
       payload.emailAddresses = payload.emailAddresses.filter(e => e.type !== type);
       vList.forEach(email => {
-        if (email) payload.emailAddresses.push({ value: email, type: type });
+        payload.emailAddresses.push({ value: email, type: type });
       });
     }
   };
@@ -161,17 +160,15 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeEmail(d['SMCI-XX23'], 'work');
   mergeEmail(d['SMCI-XX85'], 'school');
 
-  // --- 5. Phones (Split & Custom Label) ---
+  // 5. Phones
   const mergePhone = (val, type, label) => {
     const vList = getSplitValues(val);
     if (vList.length > 0) {
       payload.phoneNumbers = payload.phoneNumbers.filter(p => !(p.type === type && p.formattedType === label));
       vList.forEach(ph => {
-        if(ph) {
-          let obj = { value: ph, type: type };
-          if(label) obj.formattedType = label;
-          payload.phoneNumbers.push(obj);
-        }
+        let obj = { value: ph, type: type };
+        if(label) obj.formattedType = label; 
+        payload.phoneNumbers.push(obj);
       });
     }
   };
@@ -182,13 +179,13 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergePhone(d['SMCI-XX28'], 'workFax');
   mergePhone(d['SMCI-XX86'], 'other', 'FAX（学校）');
 
-  // --- 6. Address (Split & Custom Label) ---
+  // 6. Address
   const mergeAddress = (val, type, label) => {
     const vList = getSplitValues(val);
     if (vList.length > 0) {
       payload.addresses = payload.addresses.filter(a => !(a.type === type && a.formattedType === label));
       vList.forEach(addr => {
-        if(addr && !isDateString(addr)) {
+        if(!isDateString(addr)) {
           let obj = { formattedValue: addr, type: type };
           if(label) obj.formattedType = label;
           payload.addresses.push(obj);
@@ -201,18 +198,16 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   mergeAddress(d['SMCI-XX87'], 'school'); 
   mergeAddress(d['SMCI-XX80'], 'other', '実家');
 
-  // --- 7. Relations (Paired XX65 & XX66, plus others) ---
-  // A. Individual Relations
+  // 7. Relations
   const mergeSimpleRel = (val, type) => {
     getSplitValues(val).forEach(p => {
-      if(p) payload.relations.push({ person: p, type: type });
+      payload.relations.push({ person: p, type: type });
     });
   };
   mergeSimpleRel(d['SMCI-XX62'], 'spouse');
   mergeSimpleRel(d['SMCI-XX63'], 'father');
   mergeSimpleRel(d['SMCI-XX64'], 'mother');
 
-  // B. Custom Relations
   const relTypes = getSplitValues(d['SMCI-XX65']); 
   const relNames = getSplitValues(d['SMCI-XX66']); 
   const maxRel = Math.max(relTypes.length, relNames.length);
@@ -224,16 +219,16 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     }
   }
 
-  // --- 8. URLs (Social & Related) ---
+  // 8. URLs
   const pushUrl = (val, type) => { 
     getSplitValues(val).forEach(u => {
-      if(u) payload.urls.push({ value: u, type: type });
+      payload.urls.push({ value: u, type: type });
     });
   };
   pushUrl(d['SMCI-XX36'], 'homePage'); 
-  pushUrl(d['SMCI-XX37'], 'profile');
-  pushUrl(d['SMCI-XX38'], 'profile');
-  pushUrl(d['SMCI-XX39'], 'profile');
+  pushUrl(d['SMCI-XX37'], 'profile'); 
+  pushUrl(d['SMCI-XX38'], 'profile'); 
+  pushUrl(d['SMCI-XX39'], 'profile'); 
   pushUrl(d['SMCI-PNY02'], 'profile'); 
   pushUrl(d['SMCI-XX83'], 'profile');  
   pushUrl(d['SMCI-XX40'], 'homePage');
@@ -241,7 +236,6 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   pushUrl(d['SMCI-XX42'], 'homePage');
   pushUrl(d['SMCI-XX43'], 'homePage');
 
-  // Related Links
   const linkNames = getSplitValues(d['SMCI-XX46']);
   const linkUrls  = getSplitValues(d['SMCI-XX47']);
   const maxLink = Math.max(linkNames.length, linkUrls.length);
@@ -256,10 +250,10 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
     }
   }
 
-  // --- 9. Custom Fields (All Multi-value) ---
+  // 9. Custom Fields
   const setCF = (key, val) => {
     getSplitValues(val).forEach(v => {
-      if(v) payload.userDefined.push({ key: key, value: v });
+      payload.userDefined.push({ key: key, value: v });
     });
   };
 
@@ -276,13 +270,11 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("出身地", d['SMCI-XX81']);
   setCF("出生地", d['SMCI-XX82']);
   setCF("学校名", d['SMCI-XX84']); 
-  setCF("学部学科等", d['SMCI-XX88']); // 【追加】学部学科等 (ID1.2)
+  setCF("学部学科等", d['SMCI-XX88']); 
 
-  // English Name CF
   const engName = `${cleanData(d['SMCI-XX11'])} ${cleanData(d['SMCI-XX12'])} ${cleanData(d['SMCI-XX13'])}`.trim();
   setCF("英語名", engName);
   
-  // Other ID/Codes
   ["SMCI-XX50","SMCI-XX51","SMCI-XX52","SMCI-XX53","SMCI-XX54","SMCI-XX55","SMCI-XX56","SMCI-XX57","SMCI-XX58","SMCI-XX59","SMCI-XX60"]
     .forEach(id => setCF(id, d[id]));
   
@@ -290,7 +282,6 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   setCF("支払金額(米ドル)", d['SMCI-XX72']);
   setCF("SM通貨", d['SMCI-XX73']);
 
-  // Dates
   const bday = convertKokiToDate(d['SMCI-XX32']); 
   if (bday) payload.birthdays.push({ date: bday });
   
@@ -302,13 +293,15 @@ function buildPersonPayload(d, existing, valSMCI11, valSMCI9, newLabelIds) {
   addEvent(d['SMCI-XX33'], '最終面会年月日');
   addEvent(d['SMCI-XX34'], '死去日時');
 
-  // --- Biography / Footer ---
+  // --- Biography ---
   let userNotes = "";
   if (existing && existing.biographies) {
     userNotes = existing.biographies[0].value.split(BASE_DELIMITER)[0];
     userNotes = userNotes.replace(/----\s*$/, "").trim(); 
   }
-  let footer = `\n\n----\n${BASE_DELIMITER}\n${getTimestampString()}\n\n`;
+  
+  // 【修正】指定フォーマット: v26.0 (SM-ﾄ...)
+  let footer = `\n\n----\n${BASE_DELIMITER}\n${SCRIPT_VERSION} (${getTimestampString()})\n\n`;
   footer += `SMCI11: ${valSMCI11}\n`;
   footer += `SMCI9: ${valSMCI9}\n`;
   footer += `SMCI3: ${cleanData(d['SMCI-XX78'])}\n`; 
