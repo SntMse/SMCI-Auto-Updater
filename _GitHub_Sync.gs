@@ -1,5 +1,5 @@
 /**
- * GitHub to GAS Sync Script (No Service Required Version)
+ * GitHub to GAS Sync Script (Direct API Mode)
  * 秘密情報は ScriptProperties から読み込みます
  */
 
@@ -11,7 +11,7 @@ const SYNC_FILES = [
   "_GitHub_Sync"
 ];
 
-function pullFromGitHub() {
+function pullFromGitHub_New() {
   console.log("🚀 GitHub Sync Started (Direct API Mode)...");
 
   const props = PropertiesService.getScriptProperties();
@@ -22,7 +22,7 @@ function pullFromGitHub() {
   const SCRIPT_ID = ScriptApp.getScriptId();
 
   if (!USER || !REPO || !TOKEN) {
-    console.error("❌ エラー: スクリプトプロパティ(GITHUB_USER, GITHUB_REPO, GITHUB_TOKEN)が設定されていません。");
+    console.error("❌ エラー: スクリプトプロパティ(GITHUB_USER, GITHUB_REPO, GITHUB_TOKEN)を確認してください。");
     return;
   }
 
@@ -65,12 +65,10 @@ function pullFromGitHub() {
   }
 
   // 2. GAS APIを直接叩いて自分自身を更新
-  // (Scriptサービスを使わず、UrlFetchAppで実行します)
   const gasApiUrl = `https://script.googleapis.com/v1/projects/${SCRIPT_ID}/content`;
   const gasToken = ScriptApp.getOAuthToken();
   
   try {
-    // まず現在のマニフェスト(appsscript.json)を取得して確保する
     const currentRes = UrlFetchApp.fetch(gasApiUrl, {
       headers: { "Authorization": `Bearer ${gasToken}` }
     });
@@ -78,13 +76,12 @@ function pullFromGitHub() {
     const manifest = currentData.files.find(f => f.name === "appsscript");
     
     if (manifest) {
-      newFiles.push(manifest); // マニフェストも更新リストに加える
+      newFiles.push(manifest); 
     } else {
       console.error("❌ appsscript.json が取得できませんでした。");
       return;
     }
 
-    // 更新リクエスト (PUT)
     UrlFetchApp.fetch(gasApiUrl, {
       method: "put",
       contentType: "application/json",
