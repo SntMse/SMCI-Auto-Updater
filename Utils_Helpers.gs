@@ -1,14 +1,18 @@
 /**
  * File: Utils_Helpers.gs
  * Helper functions
- * Version: 27.1 (Fix: Apostrophe Date Support)
+ * Version: 27.2 (Fix: extractImageUrl and cleanData)
  */
 
 function cleanData(val) {
   if (val === null || val === undefined) return "";
   if (val instanceof Date) return val;
+  
   let str = String(val);
-  if (str.includes("CellImage") || str === "Obj") return "";
+  
+  // 💡 スプシ固有の画像オブジェクト文字列を包括的に検出して早期リターン
+  if (str.includes("CellImage") || str === "Obj" || str.includes("Blob")) return "";
+  
   str = str.trim();
   const upperStr = str.toUpperCase();
   const ignoreList = ["NIL", "UNK", "取得中", "#N/A", "N/A", "=NA()", "0", ""];
@@ -65,10 +69,25 @@ function isDateString(val) {
   return /[\d]{4}[\/\-][\d]{1,2}/.test(String(val));
 }
 
+/**
+ * IMAGE関数から画像URLを抽出する
+ * @param {string} formula セルの数式 (例: '=IMAGE("https://example.com/pic.jpg", 1)')
+ * @return {string|null} 抽出されたURL、またはnull
+ */
 function extractImageUrl(formula) {
-  if (!formula) return null;
-  const match = formula.match(/IMAGE\s*\(\s*["']([^"']+)["']/i);
-  return match ? match[1] : null;
+  if (!formula || typeof formula !== 'string') return null;
+  
+  // 大文字小文字を区別せず、=IMAGE("URL") または =image('URL') の中身をキャプチャする正規表現
+  const match = formula.match(/=IMAGE\s*\(\s*["']([^"']+)["']/i);
+  
+  if (match && match[1]) {
+    const url = match[1].trim();
+    // 抽出された文字列がhttpから始まっているか検証
+    if (url.startsWith('http')) {
+      return url;
+    }
+  }
+  return null;
 }
 
 function kataToHira(str) {
